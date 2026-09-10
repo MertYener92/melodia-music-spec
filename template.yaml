@@ -18,6 +18,13 @@ Parameters:
     Type: String
     Default: claude-haiku-4-5-20251001
     Description: Kullanilacak Claude modeli (dogrudan Anthropic API model ID'si)
+  MusicSpecCreditCost:
+    Type: Number
+    Default: 1
+    Description: >
+      TAHMINI DEGER. Bir music-spec uretimi kac jeton harcasin? Gercek
+      maliyet netlesince bu degeri degistirip sadece "sam deploy" ile
+      tekrar deploy et, koda dokunmana gerek yok.
 
 Globals:
   Function:
@@ -35,6 +42,15 @@ Resources:
         Variables:
           ANTHROPIC_API_KEY: '{{resolve:secretsmanager:melodia/anthropic-api-key:SecretString:ANTHROPIC_API_KEY}}'
           MODEL_ID: !Ref AnthropicModelId
+          USERS_TABLE_NAME: !ImportValue melodia-users-table-name
+          MUSIC_SPEC_CREDIT_COST: !Ref MusicSpecCreditCost
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !ImportValue melodia-users-table-arn
       Events:
         MusicSpecPost:
           Type: HttpApi

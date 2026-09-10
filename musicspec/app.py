@@ -3,10 +3,74 @@ import os
 import re
 import urllib.request
 import urllib.error
+from datetime import datetime, timezone
+
+import boto3
 
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 MODEL_ID = os.environ.get("MODEL_ID", "claude-haiku-4-5-20251001")
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+
+# --- Jeton/kota kontrolu -------------------------------------------------
+# UsersTable, melodia-backend stack'inde yasiyor; ayni kullaniciya ait
+# jeton bakiyesini burada da kontrol edip dusuyoruz (cross-stack DynamoDB
+# erisimi, bkz. template.yaml'daki ImportValue).
+USERS_TABLE_NAME = os.environ["USERS_TABLE_NAME"]
+MUSIC_SPEC_CREDIT_COST = int(os.environ.get("MUSIC_SPEC_CREDIT_COST", "1"))
+
+# TAHMINI DEGERLER. Gercek maliyet netlesince backend'deki quota.js'deki
+# gibi ayarlanabilir hale getirebiliriz. Simdilik ayni "plan" alanini
+# (free/basic_monthly/pro_monthly) okuyup makul bir aylik jeton havuzu
+# tahsis ediyoruz (melodia-video ile ayni degerler, tutarlilik icin).
+AI_CREDIT_LIMITS = {
+    "free": 10,
+    "basic_monthly": 100,
+    "pro_monthly": 300,
+}
+
+_dynamodb = boto3.resource("dynamodb")
+_users_table = _dynamodb.Table(USERS_TABLE_NAME)
+
+
+def _current_period():
+    now = datetime.now(timezone.utc)
+    return f"{now.year}-{now.month}"
+
+
+def _check_credits_available(user_id, cost):
+    resp = _users_table.get_item(Key={"userId": user_id})
+    user = resp.get("Item") or {}
+
+    period = _current_period()
+    plan = user.get("plan", "free")
+    limit = AI_CREDIT_LIMITS.get(plan, AI_CREDIT_LIMITS["free"])
+    used = int(user.get("aiCreditsUsed", 0)) if user.get("aiCreditsPeriod") == period else 0
+
+    return {
+        "allowed": used + cost <= limit,
+        "remaining": max(limit - used, 0),
+        "used": used,
+        "period": period,
+    }
+
+
+def _deduct_credits(user_id, cost, used, period):
+    # Jeton SADECE Anthropic istegi basarili olduktan sonra dusulur --
+    # uretim basarisiz olursa kullanicinin hakki sende kalir (backend'deki
+    # sarki kota mantigiyla ayni adalet ilkesi).
+    _users_table.update_item(
+        Key={"userId": user_id},
+        UpdateExpression=(
+            "SET aiCreditsUsed = :newUsed, aiCreditsPeriod = :period, "
+            "#plan = if_not_exists(#plan, :freePlan)"
+        ),
+        ExpressionAttributeNames={"#plan": "plan"},
+        ExpressionAttributeValues={
+            ":newUsed": used + cost,
+            ":period": period,
+            ":freePlan": "free",
+        },
+    )
 
 SYSTEM_PROMPT = """Sen bir muzik produksiyon uzmanisin. Kullanici muzik teorisi
 bilmez; sana gunluk dilde, insan gibi tarif edilmis cevaplar (bu sarkinin
@@ -102,6 +166,28 @@ def handler(event, context):
         if not answers:
             return _response(400, {"error": "answers alani bos olamaz."})
 
+        # Pahali Anthropic cagrisindan ONCE jeton kontrolu -- kota
+        # dolmussa hicbir dis servise istek atilmaz, jeton harcanmaz.
+        user_id = (
+            event.get("requestContext", {})
+            .get("authorizer", {})
+            .get("jwt", {})
+            .get("claims", {})
+            .get("sub")
+        )
+        credit_check = _check_credits_available(user_id, MUSIC_SPEC_CREDIT_COST)
+        if not credit_check["allowed"]:
+            return _response(
+                429,
+                {
+                    "error": "quota_exceeded",
+                    "message": (
+                        f"Bu ayki jeton hakkiniz yetersiz "
+                        f"(kalan: {credit_check['remaining']}, gereken: {MUSIC_SPEC_CREDIT_COST})."
+                    ),
+                },
+            )
+
         user_content = (
             f"Kullanicinin cevaplari (JSON): {json.dumps(answers, ensure_ascii=False)}\n"
             f"Sarki sozu dili: {language}\n"
@@ -138,6 +224,11 @@ def handler(event, context):
                     + (error_body[:300] if error_body else str(e))
                 },
             )
+
+        # Anthropic istegi basarili oldu -- jetonu simdi dus.
+        _deduct_credits(
+            user_id, MUSIC_SPEC_CREDIT_COST, credit_check["used"], credit_check["period"]
+        )
 
         text = result["content"][0]["text"]
 
