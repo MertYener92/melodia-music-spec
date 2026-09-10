@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Melodia - AI Muzik Parametre Cikarim Backend (music-spec).
+  Mevcut Suno backend'ine hic dokunmaz; sadece ayni Cognito User Pool'u
+  paylasan, tamamen bagimsiz yeni bir Lambda + HTTP API.
+
+Parameters:
+  UserPoolId:
+    Type: String
+    Default: eu-north-1_rr3QqebGm
+    Description: Mevcut Cognito User Pool ID (auth icin paylasilir)
+  UserPoolClientId:
+    Type: String
+    Default: 7vg2gk4ormhb17daln5adkbi1f
+    Description: Mevcut Cognito App Client ID
+  AnthropicApiKey:
+    Type: String
+    NoEcho: true
+    Description: Anthropic API key (console.anthropic.com) - direkt Claude API icin
+  AnthropicModelId:
+    Type: String
+    Default: claude-haiku-4-5-20251001
+    Description: Kullanilacak Claude modeli (dogrudan Anthropic API model ID'si)
+
+Globals:
+  Function:
+    Timeout: 25
+    MemorySize: 256
+    Runtime: python3.12
+
+Resources:
+  MusicSpecFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: musicspec/
+      Handler: app.handler
+      Environment:
+        Variables:
+          ANTHROPIC_API_KEY: !Ref AnthropicApiKey
+          MODEL_ID: !Ref AnthropicModelId
+      Events:
+        MusicSpecPost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref MusicSpecHttpApi
+            Path: /music-spec
+            Method: POST
+
+  MusicSpecHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        AllowMethods:
+          - POST
+          - OPTIONS
+      Auth:
+        Authorizers:
+          CognitoAuthorizer:
+            JwtConfiguration:
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPoolId}"
+              audience:
+                - !Ref UserPoolClientId
+            IdentitySource: "$request.header.Authorization"
+        DefaultAuthorizer: CognitoAuthorizer
+
+Outputs:
+  MusicSpecApiUrl:
+    Description: "Yeni music-spec endpoint URL'i (Flutter tarafinda kullanilacak)"
+    Value: !Sub "https://${MusicSpecHttpApi}.execute-api.${AWS::Region}.amazonaws.com/music-spec"
+  MusicSpecFunctionName:
+    Description: "Lambda fonksiyon adi (loglara bakmak icin)"
+    Value: !Ref MusicSpecFunction

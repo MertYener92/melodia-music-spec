@@ -1,0 +1,14 @@
+﻿__pycache__/
+*.pyc
+venv/
+.venv/
+env/
+.env
+.env.local
+.aws-sam/
+*.log
+.vscode/
+.idea/
+*.egg-info/
+dist/
+build/

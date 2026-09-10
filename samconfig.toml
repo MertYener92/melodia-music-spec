@@ -1,0 +1,12 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "melodia-music-spec"
+resolve_s3 = true
+s3_prefix = "melodia-music-spec"
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "UserPoolId=\"eu-north-1_rr3QqebGm\" UserPoolClientId=\"7vg2gk4ormhb17daln5adkbi1f\" AnthropicModelId=\"claude-haiku-4-5-20251001\""
+image_repositories = []
+
+[default.global.parameters]
+region = "eu-north-1"
