@@ -22,8 +22,14 @@ MUSIC_SPEC_CREDIT_COST = int(os.environ.get("MUSIC_SPEC_CREDIT_COST", "1"))
 # gibi ayarlanabilir hale getirebiliriz. Simdilik ayni "plan" alanini
 # (free/basic_monthly/pro_monthly) okuyup makul bir aylik jeton havuzu
 # tahsis ediyoruz (melodia-video ile ayni degerler, tutarlilik icin).
+#
+# ONEMLI: Bu havuz video VE music-spec arasinda PAYLASILIYOR (ayni
+# aiCreditsUsed alani). Test asamasinda gercek limit uygulamayi
+# kirmasin diye free plani GECICI olarak pratik olarak sinirsiz
+# yapildi. Yayina almadan once makul bir sayiya (orn. 10) dusurmeyi
+# UNUTMA.
 AI_CREDIT_LIMITS = {
-    "free": 10,
+    "free": 10**9,
     "basic_monthly": 100,
     "pro_monthly": 300,
 }
@@ -245,4 +251,7 @@ def handler(event, context):
             502, {"error": "Model gecerli JSON dondurmedi, tekrar deneyin."}
         )
     except Exception as e:  # noqa: BLE001
+        import traceback
+        print(f"MUSIC-SPEC HATASI: {e}")
+        traceback.print_exc()
         return _response(500, {"error": str(e)})
