@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 
 import boto3
 
+from credit_plans import limit_for_plan, current_period_key
+
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 MODEL_ID = os.environ.get("MODEL_ID", "claude-haiku-4-5-20251001")
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
@@ -15,41 +17,40 @@ ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 # UsersTable, melodia-backend stack'inde yasiyor; ayni kullaniciya ait
 # jeton bakiyesini burada da kontrol edip dusuyoruz (cross-stack DynamoDB
 # erisimi, bkz. template.yaml'daki ImportValue).
+#
+# DUZELTME: Bu dosya daha once kendi bagimsiz (ve ESKI/YANLIS) bir
+# AI_CREDIT_LIMITS kopyasi tutuyordu -- pro_monthly'yi hala 300 saniyordu,
+# pro_weekly/pro_yearly'yi hic tanimiyordu (bu ikisi icin sessizce "free"
+# limitine, yani pratik olarak sinirsiza duruyordu). Artik generate.js
+# ile AYNI degerleri (credit_plans.py, creditPlans.js'in Python karsiligi)
+# kullaniyor.
 USERS_TABLE_NAME = os.environ["USERS_TABLE_NAME"]
 MUSIC_SPEC_CREDIT_COST = int(os.environ.get("MUSIC_SPEC_CREDIT_COST", "1"))
 
-# TAHMINI DEGERLER. Gercek maliyet netlesince backend'deki quota.js'deki
-# gibi ayarlanabilir hale getirebiliriz. Simdilik ayni "plan" alanini
-# (free/basic_monthly/pro_monthly) okuyup makul bir aylik jeton havuzu
-# tahsis ediyoruz (melodia-video ile ayni degerler, tutarlilik icin).
-#
-# ONEMLI: Bu havuz video VE music-spec arasinda PAYLASILIYOR (ayni
-# aiCreditsUsed alani). Test asamasinda gercek limit uygulamayi
-# kirmasin diye free plani GECICI olarak pratik olarak sinirsiz
-# yapildi. Yayina almadan once makul bir sayiya (orn. 10) dusurmeyi
-# UNUTMA.
-AI_CREDIT_LIMITS = {
-    "free": 10**9,
-    "basic_monthly": 100,
-    "pro_monthly": 300,
-}
-
 _dynamodb = boto3.resource("dynamodb")
 _users_table = _dynamodb.Table(USERS_TABLE_NAME)
-
-
-def _current_period():
-    now = datetime.now(timezone.utc)
-    return f"{now.year}-{now.month}"
 
 
 def _check_credits_available(user_id, cost):
     resp = _users_table.get_item(Key={"userId": user_id})
     user = resp.get("Item") or {}
 
-    period = _current_period()
-    plan = user.get("plan", "free")
-    limit = AI_CREDIT_LIMITS.get(plan, AI_CREDIT_LIMITS["free"])
+    now = datetime.now(timezone.utc)
+
+    # SAVUNMA KATMANI (madde 11 -- paywall): Apple'in webhook'u bir sebeple
+    # gecikirse ya da hic gelmezse diye SADECE ona guvenmiyoruz -- abonelik
+    # suresi (planExpiresAt) burada da kontrol ediliyor.
+    plan_expires_at = user.get("planExpiresAt")
+    is_expired = False
+    if plan_expires_at:
+        try:
+            is_expired = datetime.fromisoformat(plan_expires_at.replace("Z", "+00:00")) < now
+        except ValueError:
+            is_expired = False
+
+    plan = "free" if is_expired else user.get("plan", "free")
+    limit = limit_for_plan(plan)
+    period = current_period_key(plan, now)
     used = int(user.get("aiCreditsUsed", 0)) if user.get("aiCreditsPeriod") == period else 0
 
     return {
